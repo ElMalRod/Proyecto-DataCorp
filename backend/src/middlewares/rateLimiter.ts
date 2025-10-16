@@ -52,10 +52,38 @@ export const searchRateLimit = createRateLimit({
 
 export const loadRateLimit = createRateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
-  maxRequests: 5 // 5 cargas por hora
+  maxRequests: 3 // 3 cargas por hora (más restrictivo para cargas)
 });
 
 export const suggestRateLimit = createRateLimit({
   windowMs: 60 * 1000, // 1 minuto
   maxRequests: 200 // 200 sugerencias por minuto
 });
+
+export const statsRateLimit = createRateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  maxRequests: 100 // 100 consultas de stats por minuto (aumentado para polling durante carga)
+});
+
+// Función para limpiar rate limits después de operaciones exitosas
+export const clearRateLimit = async (req: Request, rateLimitType: string): Promise<void> => {
+  try {
+    const ip = req.ip || 'unknown';
+    const keys = [`ratelimit:${ip}`];
+    
+    // También limpiar keys específicas si existen
+    if (rateLimitType === 'stats') {
+      keys.push(`ratelimit:stats:${ip}`);
+    } else if (rateLimitType === 'load') {
+      keys.push(`ratelimit:load:${ip}`);
+    }
+    
+    for (const key of keys) {
+      await redis.del(key);
+    }
+    
+    console.log(`Rate limits limpiados para ${rateLimitType}: ${ip}`);
+  } catch (error) {
+    console.error('Error limpiando rate limit:', error);
+  }
+};

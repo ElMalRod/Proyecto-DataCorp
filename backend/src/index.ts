@@ -4,12 +4,13 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectMongoDB, redis } from './config/database.js';
 import { requestLogger, errorLogger } from './middlewares/logger.js';
-import { searchRateLimit, loadRateLimit, suggestRateLimit } from './middlewares/rateLimiter.js';
+import { searchRateLimit, loadRateLimit, suggestRateLimit, statsRateLimit } from './middlewares/rateLimiter.js';
 
 // Importar rutas
 import indexRoutes from './routes/indexRoutes.js';
 import searchRoutes from './routes/searchRoutes.js';
 import suggestRoutes from './routes/suggestRoutes.js';
+import categoryRoutes from './routes/categoryRoutes.js';
 
 dotenv.config();
 
@@ -37,6 +38,9 @@ app.get('/', (req, res) => {
       suggest: 'GET /suggest?q=query&limit=10 - Obtener sugerencias',
       stats: 'GET /index/stats - Estadísticas de carga',
       searchStats: 'GET /search/stats - Estadísticas de búsqueda',
+      categories: 'GET /categories - Obtener todas las categorías',
+      categorySearch: 'GET /categories/search?category=&page=1&limit=10 - Buscar por categoría',
+      categoryStats: 'GET /categories/stats - Estadísticas de categorías',
       health: 'GET /health - Estado del sistema'
     },
     timestamp: new Date().toISOString()
@@ -86,9 +90,10 @@ app.get('/health', async (req, res) => {
 });
 
 // Rutas de la API con rate limiting
-app.use('/index', loadRateLimit, indexRoutes);
+app.use('/index', indexRoutes); // Quitamos loadRateLimit ya que cada ruta tiene su propio rate limit
 app.use('/search', searchRateLimit, searchRoutes);
 app.use('/suggest', suggestRateLimit, suggestRoutes);
+app.use('/categories', searchRateLimit, categoryRoutes); // Usamos el mismo rate limit que search
 
 // Manejo de rutas no encontradas - debe ir después de todas las rutas definidas
 app.use((req, res) => {
@@ -103,6 +108,10 @@ app.use((req, res) => {
       'GET /suggest',
       'GET /index/stats',
       'GET /search/stats',
+      'GET /categories',
+      'GET /categories/search',
+      'GET /categories/stats',
+      'DELETE /categories/cache',
       'GET /health'
     ],
     timestamp: new Date().toISOString()

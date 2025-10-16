@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { DataLoaderService } from '../services/DataLoaderService.js';
+import { clearRateLimit } from '../middlewares/rateLimiter.js';
 import path from 'path';
 
 export class IndexController {
@@ -24,6 +25,10 @@ export class IndexController {
       const totalDuration = (endTime - startTime) / 1000;
       
       if (result.success) {
+        // Limpiar rate limits después de carga exitosa
+        await clearRateLimit(req, 'load');
+        await clearRateLimit(req, 'stats');
+        
         res.status(200).json({
           success: true,
           message: result.message,
