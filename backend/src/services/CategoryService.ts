@@ -46,8 +46,15 @@ export class CategoryService {
     const cacheKey = this.generateCacheKey(options);
 
     try {
-      // Intentar obtener desde caché
-      const cached = await redis.get(cacheKey);
+      // Pipeline de Redis para cache + categorías
+      const pipeline = redis.pipeline();
+      pipeline.get(cacheKey);
+      pipeline.get(this.CATEGORIES_CACHE_KEY);
+
+      const results = await pipeline.exec();
+      const cached = results?.[0]?.[1] as string | null;
+      const cachedCategories = results?.[1]?.[1] as string | null;
+
       if (cached) {
         const result = JSON.parse(cached);
         result.performance = {
@@ -71,15 +78,22 @@ export class CategoryService {
       // Calcular skip para paginación
       const skip = (page - 1) * limit;
 
+      // Reutilizar categorías cacheadas si existen
+      let categories: string[];
+      if (cachedCategories) {
+        categories = JSON.parse(cachedCategories);
+      } else {
+        categories = await this.getAllCategories();
+      }
+
       // Ejecutar consultas en paralelo
-      const [products, total, categories] = await Promise.all([
+      const [products, total] = await Promise.all([
         Product.find(filter)
           .sort(sortOptions)
           .skip(skip)
           .limit(limit)
           .lean(),
-        Product.countDocuments(filter),
-        this.getAllCategories()
+        Product.countDocuments(filter)
       ]);
 
       // Calcular información de paginación
@@ -105,13 +119,21 @@ export class CategoryService {
         }
       };
 
-      // Guardar en caché solo si hay resultados
+      // Guardar en caché con pipeline
       if (products.length > 0) {
-        await redis.setex(cacheKey, this.CACHE_EXPIRY, JSON.stringify({
+        const savePipeline = redis.pipeline();
+        savePipeline.setex(cacheKey, this.CACHE_EXPIRY, JSON.stringify({
           products,
           pagination: result.pagination,
           categories
         }));
+
+        // Guardar categorías si no estaban cacheadas
+        if (!cachedCategories) {
+          savePipeline.setex(this.CATEGORIES_CACHE_KEY, 3600, JSON.stringify(categories));
+        }
+
+        await savePipeline.exec();
       }
 
       return result;
@@ -147,15 +169,15 @@ export class CategoryService {
 
   async getCategoryStats(): Promise<{ category: string; count: number }[]> {
     const cacheKey = 'category_stats';
-    
+
     try {
-      // Intentar obtener desde caché
+      // Cache de agregaciones con TTL extendido
       const cached = await redis.get(cacheKey);
       if (cached) {
         return JSON.parse(cached);
       }
 
-      // Obtener estadísticas por categoría
+      // Obtener estadísticas por categoría (operación pesada)
       const stats = await Product.aggregate([
         {
           $group: {
@@ -175,7 +197,8 @@ export class CategoryService {
         }
       ]);
 
-      // Guardar en caché por 30 minutos
+      // TTL más largo para agregaciones (30 min)
+      // Las stats no cambian frecuentemente, podemos cachearlas más tiempo
       await redis.setex(cacheKey, 1800, JSON.stringify(stats));
 
       return stats;

@@ -10,6 +10,8 @@ const ImprovedSearch = () => {
   // Estados de resultados
   const [searchResults, setSearchResults] = useState([]);
   const [pagination, setPagination] = useState(null);
+  const [searchPerformance, setSearchPerformance] = useState(null);
+  const [warning, setWarning] = useState(null);
   
   // Estados de autocompletado
   const [suggestions, setSuggestions] = useState([]);
@@ -114,6 +116,14 @@ const ImprovedSearch = () => {
 
     setLoading(true);
     setError(null);
+    setWarning(null);
+
+    // Advertencia para búsquedas muy largas
+    if (searchQuery.length > 100) {
+      setWarning('La búsqueda es muy larga (>100 caracteres). Se truncará para optimizar el rendimiento.');
+    } else if (searchQuery.length > 50) {
+      setWarning('Búsqueda larga detectada. Puede tardar más tiempo del usual.');
+    }
 
     try {
       let response;
@@ -126,20 +136,28 @@ const ImprovedSearch = () => {
         response = await searchByCategory(selectedCategory, page, limit);
         setSearchResults(response.data || []);
         setPagination(response.pagination || null);
+
+        // Extraer métricas de rendimiento
+        if (response.searchTime !== undefined) {
+          setSearchPerformance({
+            searchTime: response.searchTime,
+            fromCache: response.fromCache || false
+          });
+        }
       } else {
         // Búsqueda por texto (estructura original)
         console.log('Using text search for query:', searchQuery);
         response = await searchProducts(searchQuery, page, limit);
         console.log('Search response:', response); // Para debug
-        
+
         // La estructura del backend de búsqueda es:
         // response.data = { products: [...], page, totalPages, etc }
-        // response.meta = { pagination: {...} }
-        
+        // response.meta = { pagination: {...}, performance: {...} }
+
         if (response.data && response.data.products) {
           // Productos están en response.data.products
           setSearchResults(response.data.products);
-          
+
           // Paginación está en response.meta.pagination
           const paginationData = response.meta?.pagination;
           if (paginationData) {
@@ -162,10 +180,20 @@ const ImprovedSearch = () => {
               hasPrev: response.data.page > 1
             });
           }
+
+          // Extraer métricas de rendimiento
+          const perfData = response.meta?.performance;
+          if (perfData) {
+            setSearchPerformance({
+              searchTime: parseInt(perfData.searchTime) || 0,
+              fromCache: perfData.fromCache || false
+            });
+          }
         } else {
           console.warn('Unexpected response structure:', response);
           setSearchResults([]);
           setPagination(null);
+          setSearchPerformance(null);
         }
       }
 
@@ -426,6 +454,52 @@ const ImprovedSearch = () => {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Métricas de rendimiento */}
+      {searchPerformance && (
+        <div className="notification is-light mb-4">
+          <div className="level is-mobile">
+            <div className="level-left">
+              <div className="level-item">
+                <span className="icon has-text-info">
+                  <i className="fas fa-tachometer-alt"></i>
+                </span>
+                <span className="ml-2">
+                  <strong>Tiempo de búsqueda:</strong> {searchPerformance.searchTime}ms
+                </span>
+              </div>
+              <div className="level-item">
+                {searchPerformance.fromCache ? (
+                  <span className="tag is-success">
+                    <span className="icon">
+                      <i className="fas fa-bolt"></i>
+                    </span>
+                    <span>Desde Cache (Redis)</span>
+                  </span>
+                ) : (
+                  <span className="tag is-info">
+                    <span className="icon">
+                      <i className="fas fa-database"></i>
+                    </span>
+                    <span>Desde MongoDB</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mensajes de advertencia */}
+      {warning && (
+        <div className="notification is-warning is-light">
+          <button className="delete" onClick={() => setWarning(null)}></button>
+          <span className="icon">
+            <i className="fas fa-exclamation-triangle"></i>
+          </span>
+          <span>{warning}</span>
         </div>
       )}
 

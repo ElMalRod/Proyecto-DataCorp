@@ -26,15 +26,20 @@ export class SearchService {
   async searchProducts(options: SearchOptions): Promise<SearchResult> {
     const startTime = Date.now();
     const { query, page = 1, limit = this.DEFAULT_LIMIT, useCache = true } = options;
-    
+
     const normalizedQuery = this.normalizeQuery(query);
     const actualLimit = Math.min(limit, this.MAX_LIMIT);
     const skip = (page - 1) * actualLimit;
-    
-    // Intentar obtener del cache
+
+    // Pipeline de Redis - Ejecutar múltiples comandos en paralelo
     if (useCache) {
-      const cached = await this.getFromCache(normalizedQuery, page, actualLimit);
+      const cached = await this.getFromCacheWithPipeline(normalizedQuery, page, actualLimit);
       if (cached) {
+        // Track búsqueda popular en segundo plano (no bloqueante)
+        this.trackPopularSearch(normalizedQuery).catch(err =>
+          console.error('Error tracking search:', err)
+        );
+
         return {
           ...cached,
           searchTime: Date.now() - startTime,
@@ -45,7 +50,7 @@ export class SearchService {
 
     // Realizar búsqueda con precedencia
     const searchResult = await this.performSearch(normalizedQuery, skip, actualLimit);
-    
+
     const result: SearchResult = {
       products: searchResult.products,
       totalCount: searchResult.totalCount,
@@ -56,9 +61,12 @@ export class SearchService {
       fromCache: false
     };
 
-    // Guardar en cache
+    // Cache Predictivo - Guardar y trackear en paralelo
     if (useCache && result.products.length > 0) {
-      await this.saveToCache(normalizedQuery, page, actualLimit, result);
+      Promise.all([
+        this.saveToCacheWithPipeline(normalizedQuery, page, actualLimit, result),
+        this.trackPopularSearch(normalizedQuery)
+      ]).catch(err => console.error('Error saving cache:', err));
     }
 
     return result;
@@ -73,35 +81,66 @@ export class SearchService {
       return { products: products as any[], totalCount };
     }
 
+    // Limitar longitud de query para evitar búsquedas excesivamente lentas
+    const trimmedQuery = query.length > 100 ? query.substring(0, 100) : query;
+
+    // Para queries muy largas (>50 caracteres), usar búsqueda optimizada
+    if (trimmedQuery.length > 50) {
+      return await this.optimizedLongQuerySearch(trimmedQuery, skip, limit);
+    }
+
     // Búsqueda con precedencia jerárquica
-    const searchQueries = this.buildPrecedenceQueries(query);
-    
+    const searchQueries = this.buildPrecedenceQueries(trimmedQuery);
+
     let allProducts: any[] = [];
     let totalFound = 0;
-    
+
     for (const searchQuery of searchQueries) {
       if (allProducts.length >= limit + skip) break;
-      
+
       const remainingLimit = (limit + skip) - allProducts.length;
       const products = await Product.find(searchQuery)
         .limit(remainingLimit)
         .lean();
-      
+
       // Filtrar duplicados
       const existingIds = new Set(allProducts.map(p => p._id.toString()));
       const newProducts = products.filter(p => !existingIds.has(p._id.toString()));
-      
+
       allProducts.push(...newProducts);
       totalFound += newProducts.length;
     }
 
     // Aplicar paginación
     const paginatedProducts = allProducts.slice(skip, skip + limit);
-    
+
     return {
       products: paginatedProducts as any[],
       totalCount: Math.max(totalFound, allProducts.length)
     };
+  }
+
+  private async optimizedLongQuerySearch(query: string, skip: number, limit: number): Promise<{ products: any[], totalCount: number }> {
+    const escapedQuery = this.escapeRegex(query);
+    const regex = new RegExp(escapedQuery, 'i');
+
+    // Para queries largas, solo buscar coincidencias exactas en título y SKU
+    const searchQuery = {
+      $or: [
+        { title: regex },
+        { sku: regex }
+      ]
+    };
+
+    const [products, totalCount] = await Promise.all([
+      Product.find(searchQuery)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Product.countDocuments(searchQuery)
+    ]);
+
+    return { products: products as any[], totalCount };
   }
 
   private buildPrecedenceQueries(query: string): any[] {
@@ -268,17 +307,179 @@ export class SearchService {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  // Pipeline de Redis
+  private async getFromCacheWithPipeline(query: string, page: number, limit: number): Promise<SearchResult | null> {
+    try {
+      const cacheKey = `${CACHE_CONFIG.PREFIX.SEARCH}${query}:${page}:${limit}`;
+      const popularKey = CACHE_CONFIG.PREFIX.POPULAR;
+
+      // Ejecutar múltiples comandos en un solo round-trip
+      const pipeline = redis.pipeline();
+      pipeline.get(cacheKey);
+      pipeline.zscore(popularKey, query); // Obtener score de popularidad
+
+      const results = await pipeline.exec();
+
+      if (results && results[0] && results[0][1]) {
+        const cached = JSON.parse(results[0][1] as string);
+        return cached;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error obteniendo del cache con pipeline:', error);
+      return null;
+    }
+  }
+
+  private async saveToCacheWithPipeline(query: string, page: number, limit: number, result: SearchResult): Promise<void> {
+    try {
+      const cacheKey = `${CACHE_CONFIG.PREFIX.SEARCH}${query}:${page}:${limit}`;
+      const cacheData = {
+        products: result.products,
+        totalCount: result.totalCount,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages
+      };
+
+      // Usar pipeline para guardar datos y metadata en paralelo
+      const pipeline = redis.pipeline();
+      pipeline.setex(cacheKey, CACHE_CONFIG.SEARCH_TTL, JSON.stringify(cacheData));
+
+      // Si es primera página, guardar también con TTL más largo para warmup
+      if (page === 1) {
+        const warmupKey = `${CACHE_CONFIG.PREFIX.WARMUP}${query}`;
+        pipeline.setex(warmupKey, CACHE_CONFIG.POPULAR_SEARCHES_TTL, JSON.stringify(cacheData));
+      }
+
+      await pipeline.exec();
+    } catch (error) {
+      console.error('Error guardando en cache con pipeline:', error);
+    }
+  }
+
+  // Cache Predictivo - Tracking de búsquedas populares
+  private async trackPopularSearch(query: string): Promise<void> {
+    try {
+      if (!query || query.trim() === '') return;
+
+      const popularKey = CACHE_CONFIG.PREFIX.POPULAR;
+
+      // Incrementar score de la búsqueda (Sorted Set)
+      await redis.zincrby(popularKey, 1, query);
+
+      // Mantener solo las top 1000 búsquedas para evitar crecimiento infinito
+      const count = await redis.zcard(popularKey);
+      if (count > 1000) {
+        // Eliminar las menos populares
+        await redis.zremrangebyrank(popularKey, 0, count - 1001);
+      }
+    } catch (error) {
+      console.error('Error tracking popular search:', error);
+    }
+  }
+
+  // Obtener búsquedas más populares
+  async getPopularSearches(limit: number = 10): Promise<{ query: string; count: number }[]> {
+    try {
+      const popularKey = CACHE_CONFIG.PREFIX.POPULAR;
+
+      // Obtener top búsquedas con sus scores
+      const results = await redis.zrevrange(popularKey, 0, limit - 1, 'WITHSCORES');
+
+      const popularSearches: { query: string; count: number }[] = [];
+      for (let i = 0; i < results.length; i += 2) {
+        if (results[i] && results[i + 1]) {
+          popularSearches.push({
+            query: results[i] as string,
+            count: parseInt(results[i + 1] as string)
+          });
+        }
+      }
+
+      return popularSearches;
+    } catch (error) {
+      console.error('Error obteniendo búsquedas populares:', error);
+      return [];
+    }
+  }
+
+  // Warmup - Precarga de búsquedas populares
+  async warmupPopularSearches(topN: number = 20): Promise<{ warmed: number; errors: number }> {
+    try {
+      const popularSearches = await this.getPopularSearches(topN);
+      let warmed = 0;
+      let errors = 0;
+
+      console.log(` Iniciando warmup de ${popularSearches.length} búsquedas populares...`);
+
+      // Precalentar búsquedas en paralelo (pero con límite)
+      const batchSize = 5;
+      for (let i = 0; i < popularSearches.length; i += batchSize) {
+        const batch = popularSearches.slice(i, i + batchSize);
+
+        await Promise.all(
+          batch.map(async ({ query }) => {
+            try {
+              // Verificar si ya está en cache
+              const warmupKey = `${CACHE_CONFIG.PREFIX.WARMUP}${query}`;
+              const exists = await redis.exists(warmupKey);
+
+              if (!exists) {
+                // Realizar búsqueda y cachearla
+                await this.searchProducts({
+                  query,
+                  page: 1,
+                  limit: this.DEFAULT_LIMIT,
+                  useCache: true
+                });
+                console.log(` Warmed: "${query}"`);
+              }
+              warmed++;
+            } catch (error) {
+              console.error(` Error warming "${query}":`, error);
+              errors++;
+            }
+          })
+        );
+      }
+
+      console.log(` Warmup completado: ${warmed} exitosos, ${errors} errores`);
+      return { warmed, errors };
+    } catch (error) {
+      console.error('Error en warmup:', error);
+      return { warmed: 0, errors: 1 };
+    }
+  }
+
   async getSearchStats(): Promise<any> {
     try {
-      const totalProducts = await Product.countDocuments();
-      const categoriesCount = await Product.distinct('category').then(cats => cats.length);
-      const brandsCount = await Product.distinct('brand').then(brands => brands.length);
-      
-      return {
+      // Cache de agregaciones
+      const statsKey = `${CACHE_CONFIG.PREFIX.AGGREGATIONS}search_stats`;
+      const cached = await redis.get(statsKey);
+
+      if (cached) {
+        return JSON.parse(cached);
+      }
+
+      // Ejecutar agregaciones en paralelo
+      const [totalProducts, categoriesCount, brandsCount] = await Promise.all([
+        Product.countDocuments(),
+        Product.distinct('category').then(cats => cats.length),
+        Product.distinct('brand').then(brands => brands.length)
+      ]);
+
+      const stats = {
         totalProducts,
         totalCategories: categoriesCount,
         totalBrands: brandsCount
       };
+
+      // Cachear resultado
+      await redis.setex(statsKey, CACHE_CONFIG.AGGREGATIONS_TTL, JSON.stringify(stats));
+
+      return stats;
     } catch (error) {
       return {
         error: `Error obteniendo estadísticas: ${error}`

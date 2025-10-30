@@ -117,4 +117,56 @@ export class SearchController {
       });
     }
   }
+
+  // Obtener búsquedas populares
+  async getPopularSearches(req: Request, res: Response): Promise<void> {
+    try {
+      const { limit = '10' } = req.query;
+      const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+
+      const popularSearches = await this.searchService.getPopularSearches(limitNum);
+
+      res.status(200).json({
+        success: true,
+        data: {
+          searches: popularSearches,
+          count: popularSearches.length
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error obteniendo búsquedas populares:', error);
+      res.status(500).json({
+        success: false,
+        message: `Error obteniendo búsquedas populares: ${error}`,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  // Ejecutar warmup manual
+  async warmupCache(req: Request, res: Response): Promise<void> {
+    try {
+      const { topN = '20' } = req.query;
+      const topNum = Math.min(parseInt(topN as string) || 20, 100);
+
+      const result = await this.searchService.warmupPopularSearches(topNum);
+
+      res.status(200).json({
+        success: true,
+        data: result,
+        message: `Warmup completado: ${result.warmed} búsquedas precalentadas`,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error en warmup:', error);
+      res.status(500).json({
+        success: false,
+        message: `Error en warmup: ${error}`,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
 }

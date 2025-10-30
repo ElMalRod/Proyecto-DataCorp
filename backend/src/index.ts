@@ -5,12 +5,14 @@ import mongoose from 'mongoose';
 import { connectMongoDB, redis } from './config/database.js';
 import { requestLogger, errorLogger } from './middlewares/logger.js';
 import { searchRateLimit, loadRateLimit, suggestRateLimit, statsRateLimit } from './middlewares/rateLimiter.js';
+import { WarmupService } from './services/WarmupService.js';
 
 // Importar rutas
 import indexRoutes from './routes/indexRoutes.js';
 import searchRoutes from './routes/searchRoutes.js';
 import suggestRoutes from './routes/suggestRoutes.js';
 import categoryRoutes from './routes/categoryRoutes.js';
+import cacheRoutes from './routes/cacheRoutes.js';
 
 dotenv.config();
 
@@ -94,6 +96,7 @@ app.use('/index', indexRoutes); // Quitamos loadRateLimit ya que cada ruta tiene
 app.use('/search', searchRateLimit, searchRoutes);
 app.use('/suggest', suggestRateLimit, suggestRoutes);
 app.use('/categories', searchRateLimit, categoryRoutes); // Usamos el mismo rate limit que search
+app.use('/cache', statsRateLimit, cacheRoutes); // Cache metrics con rate limit de stats
 
 // Manejo de rutas no encontradas - debe ir después de todas las rutas definidas
 app.use((req, res) => {
@@ -124,18 +127,32 @@ app.use(errorLogger);
 // Iniciar servidor
 const startServer = async () => {
   await connectMongoDB();
-  
+
   redis.on('connect', () => console.log('Redis conectado'));
   redis.on('error', (err) => console.error('Redis error:', err));
-  redis.on('ready', () => console.log('Redis listo para usar'));
+  redis.on('ready', () => {
+    console.log('Redis listo para usar');
+
+    // Iniciar warmup periódico después de que Redis esté listo
+    const warmupService = new WarmupService();
+
+    // Warmup cada 30 minutos (ajustable según tus necesidades)
+    const warmupInterval = parseInt(process.env.WARMUP_INTERVAL_MINUTES || '30');
+    warmupService.startPeriodicWarmup(warmupInterval);
+  });
 
   app.listen(PORT, () => {
-    console.log('Servidor iniciado');
+    console.log('=====================================');
+    console.log('Servidor DataCorp iniciado');
+    console.log('=====================================');
     console.log(`Puerto: ${PORT}`);
     console.log(`Entorno: ${process.env.NODE_ENV || 'development'}`);
     console.log(`MongoDB: ${process.env.MONGODB_URI || 'mongodb://admin:admin123@localhost:27017/products_db?authSource=admin'}`);
     console.log(`Redis: ${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`);
+    console.log('=====================================');
     console.log('Sistema listo para procesar peticiones');
+    console.log('Warmup automático activado');
+    console.log('=====================================');
   });
 };
 

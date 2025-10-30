@@ -4,6 +4,7 @@ import './App.css';
 import ImprovedSearch from './components/ImprovedSearch';
 import LoadData from './components/LoadData';
 import SystemStats from './components/SystemStats';
+import PerformanceMetrics from './components/PerformanceMetrics';
 import { getSystemHealth } from './services/api';
 
 function App() {
@@ -116,6 +117,14 @@ function App() {
                   <span>Estadísticas</span>
                 </a>
               </li>
+              <li className={activeTab === 'metrics' ? 'is-active' : ''}>
+                <a onClick={() => setActiveTab('metrics')}>
+                  <span className="icon is-small">
+                    <i className="fas fa-tachometer-alt"></i>
+                  </span>
+                  <span>Rendimiento</span>
+                </a>
+              </li>
             </ul>
           </div>
         </div>
@@ -134,6 +143,10 @@ function App() {
 
             {activeTab === 'stats' && (
               <SystemStats />
+            )}
+
+            {activeTab === 'metrics' && (
+              <PerformanceMetrics />
             )}
           </div>
         </section>

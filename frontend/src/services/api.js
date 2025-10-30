@@ -4,7 +4,7 @@ const API_BASE_URL = 'http://localhost:3000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 30 segundos por defecto
+  timeout: 60000, // 60 segundos para búsquedas complejas
   headers: {
     'Content-Type': 'application/json',
   },
@@ -105,6 +105,25 @@ export const clearCategoryCache = async () => {
 // Función para resetear rate limits
 export const resetRateLimits = async () => {
   return await api.post('/index/reset-limits');
+};
+
+// Nuevas funciones para optimizaciones Redis y métricas
+export const getPopularSearches = async (limit = 10) => {
+  const params = new URLSearchParams({
+    limit: limit.toString()
+  });
+  return await api.get(`/search/popular?${params}`);
+};
+
+export const warmupCache = async (topN = 20) => {
+  const params = new URLSearchParams({
+    topN: topN.toString()
+  });
+  return await api.post(`/search/warmup?${params}`);
+};
+
+export const getCacheMetrics = async () => {
+  return await api.get('/cache/metrics');
 };
 
 export default api;

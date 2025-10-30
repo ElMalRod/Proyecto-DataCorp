@@ -9,6 +9,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:prod": "NODE_ENV=production node dist/index.js",
+    "clean": "find ./src -type f \\( -name '*.d.ts' -o -name '*.d.ts.map' -o -name '*.js.map' -o -name '*.js' \\) -delete && echo 'Archivos compilados eliminados'",
+    "prebuild": "npm run clean",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",

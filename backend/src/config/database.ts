@@ -25,9 +25,14 @@ export const CACHE_CONFIG = {
   SEARCH_TTL: 300, // 5 minutos
   SUGGESTIONS_TTL: 600, // 10 minutos
   STATS_TTL: 3600, // 1 hora
+  POPULAR_SEARCHES_TTL: 86400, // 24 horas
+  AGGREGATIONS_TTL: 1800, // 30 minutos
   PREFIX: {
     SEARCH: 'search:',
     SUGGESTIONS: 'suggestions:',
-    STATS: 'stats:'
+    STATS: 'stats:',
+    POPULAR: 'popular_searches',
+    AGGREGATIONS: 'agg:',
+    WARMUP: 'warmup:'
   }
 };

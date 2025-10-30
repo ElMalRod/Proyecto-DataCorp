@@ -14,4 +14,14 @@ router.get('/stats', async (req, res) => {
   await searchController.getSearchStats(req, res);
 });
 
+// GET /search/popular - Búsquedas más populares
+router.get('/popular', async (req, res) => {
+  await searchController.getPopularSearches(req, res);
+});
+
+// POST /search/warmup - Precalentar búsquedas populares
+router.post('/warmup', async (req, res) => {
+  await searchController.warmupCache(req, res);
+});
+
 export default router;
